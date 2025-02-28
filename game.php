@@ -38,6 +38,10 @@ while ($row = $result->fetch_assoc()) {
 }
 $player_count = count($players);
 
+// Fetch Green and Red colors from the colors table
+$green_color = $conn->query("SELECT hex_code FROM colors WHERE name = 'Green'")->fetch_assoc()['hex_code'] ?? '#00FF00';
+$red_color = $conn->query("SELECT hex_code FROM colors WHERE name = 'Red'")->fetch_assoc()['hex_code'] ?? '#FF0000';
+
 // Initial setup
 $territory_count = $conn->query("SELECT COUNT(*) FROM territories WHERE game_id = $game_id AND owner_id IS NOT NULL")->fetch_row()[0];
 if ($territory_count == 0) {
@@ -218,6 +222,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && $game['phase'] == 'attack' && $game
 
         $from = $conn->query("SELECT name, owner_id, armies, master_territory_id FROM territories WHERE territory_id = $from_id")->fetch_assoc();
         $to = $conn->query("SELECT name, owner_id, armies, master_territory_id FROM territories WHERE territory_id = $to_id")->fetch_assoc();
+        $defender_id = $to['owner_id'];
+        $defender_name = $players[$defender_id]['nickname'] ?? $players[$defender_id]['username'];
 
         $is_adjacent = $conn->query("SELECT COUNT(*) 
                                      FROM territory_adjacencies 
@@ -234,20 +240,43 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && $game['phase'] == 'attack' && $game
             $battles = min($attack_dice, $defend_dice);
             $attack_losses = 0;
             $defend_losses = 0;
+            $results = []; // Track win/loss for each die
             for ($i = 0; $i < $battles; $i++) {
                 if ($attack_rolls[$i] > $defend_rolls[$i]) {
                     $defend_losses++;
+                    $results['attack'][$i] = 'win';
+                    $results['defend'][$i] = 'lose';
                 } else {
                     $attack_losses++;
+                    $results['attack'][$i] = 'lose';
+                    $results['defend'][$i] = 'win';
                 }
             }
             $new_from_armies = $from['armies'] - $attack_losses;
             $new_to_armies = $to['armies'] - $defend_losses;
             $conn->query("UPDATE territories SET armies = $new_from_armies WHERE territory_id = $from_id");
             $conn->query("UPDATE territories SET armies = $new_to_armies WHERE territory_id = $to_id");
-            $status_message = "Attacked {$to['name']} from {$from['name']}: You rolled " . implode(', ', $attack_rolls) . 
-                              ", they rolled " . implode(', ', $defend_rolls) . ". You lost $attack_losses, they lost $defend_losses.";
-            $action = "{$players[$_SESSION['user_id']]['nickname']} attacked {$to['name']} from {$from['name']}, rolled a " . implode(' ', $attack_rolls) . " against a " . implode(' ', $defend_rolls) . ".";
+
+            // Build dice roll table with army counts and selective coloring
+            $dice_table = "<table style='border-collapse: collapse; margin: 10px 0;'>";
+            $dice_table .= "<tr style='border: 1px solid black;'>";
+            $dice_table .= "<td style='border: 1px solid black; padding: 5px;'>" . htmlspecialchars($players[$_SESSION['user_id']]['nickname']) . " ({$from['armies']})</td>";
+            foreach ($attack_rolls as $i => $roll) {
+                $bg_color = ($i < $battles && $results['attack'][$i] === 'win') ? "background-color: $green_color;" : ($i < $battles ? "background-color: $red_color;" : "");
+                $dice_table .= "<td style='border: 1px solid black; padding: 5px; $bg_color'>$roll</td>";
+            }
+            $dice_table .= "</tr>";
+            $dice_table .= "<tr style='border: 1px solid black;'>";
+            $dice_table .= "<td style='border: 1px solid black; padding: 5px;'>" . htmlspecialchars($defender_name) . " ({$to['armies']})</td>";
+            foreach ($defend_rolls as $i => $roll) {
+                $bg_color = ($i < $battles && $results['defend'][$i] === 'win') ? "background-color: $green_color;" : ($i < $battles ? "background-color: $red_color;" : "");
+                $dice_table .= "<td style='border: 1px solid black; padding: 5px; $bg_color'>$roll</td>";
+            }
+            $dice_table .= "</tr>";
+            $dice_table .= "</table>";
+
+            $status_message = "Attacked {$to['name']} from {$from['name']}:<br>$dice_table You lost $attack_losses, they lost $defend_losses.";
+            $action = "{$players[$_SESSION['user_id']]['nickname']} attacked {$to['name']} from {$from['name']}, rolled a " . implode(' ', $attack_rolls) . " against a " . implode(' ', $defend_rolls) . ". {$players[$_SESSION['user_id']]['nickname']} lost $attack_losses, $defender_name lost $defend_losses.";
             $conn->query("INSERT INTO game_log (game_id, user_id, action) VALUES ($game_id, {$_SESSION['user_id']}, '$action')");
 
             if ($new_to_armies <= 0) {
